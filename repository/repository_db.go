@@ -162,6 +162,15 @@ func NewDatabaseRepositoryInMemory() (Repository, error) {
 
 func NewDatabaseRepository(databaseFilePath string, persistDatabaseFilePath string) (Repository, error) {
 	// mkdir dbpath, 777 is copied from zimaos-local-storage
+	// Both folders, not one. The runtime folder was created and the persistent one
+	// was not, so the very first start on a fresh box failed to open
+	// /var/lib/casaos/db/message-bus.db -- sqlite reports a missing folder as
+	// "unable to open database file: out of memory (14)" -- and systemd's restart a
+	// second later found the folder made by another service in the meantime. Every
+	// install log carried a failed first start because of it.
+	if err := os.MkdirAll(filepath.Dir(persistDatabaseFilePath), 0o777); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Dir(databaseFilePath), 0o777); err != nil {
 		return nil, err
 	}
