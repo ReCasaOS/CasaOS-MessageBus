@@ -4,10 +4,11 @@ go 1.26.0
 
 require (
 	github.com/CorrectRoadH/go-socket.io v1.8.0-rc.5
-	github.com/ReCasaOS/CasaOS-Common v0.4.24
+	github.com/ReCasaOS/CasaOS-Common v0.4.25
 	github.com/glebarez/sqlite v1.7.0
 	github.com/gobwas/ws v1.1.0
 	github.com/json-iterator/go v1.1.12
+	github.com/labstack/echo-jwt/v4 v4.4.0
 	github.com/samber/lo v1.46.0
 	go.uber.org/goleak v1.2.1
 	gorm.io/gorm v1.24.6
@@ -36,7 +37,6 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/klauspost/pgzip v1.2.5 // indirect
-	github.com/labstack/echo-jwt/v4 v4.4.0 // indirect
 	github.com/mholt/archiver/v3 v3.5.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
