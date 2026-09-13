@@ -15,6 +15,7 @@ import (
 	"github.com/deepmap/oapi-codegen/pkg/middleware"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
+	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	echo_middleware "github.com/labstack/echo/v4/middleware"
 )
@@ -59,7 +60,7 @@ func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler
 		},
 	}))
 
-	e.Use(echo_middleware.JWTWithConfig(echo_middleware.JWTConfig{
+	e.Use(echojwt.WithConfig(echojwt.Config{
 		Skipper: func(c echo.Context) bool {
 			// skip when source is unix socket or loopback
 			if fromHost(c.RealIP(), c.Request().Host) {
@@ -72,7 +73,7 @@ func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler
 
 			return false
 		},
-		ParseTokenFunc: func(token string, c echo.Context) (interface{}, error) {
+		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
 			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
 			if err != nil || !valid {
 				return nil, echo.ErrUnauthorized
