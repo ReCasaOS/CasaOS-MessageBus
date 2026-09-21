@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
+	"github.com/ReCasaOS/CasaOS-Common/utils/jwt"
 	"github.com/ReCasaOS/CasaOS-MessageBus/codegen"
 	"github.com/ReCasaOS/CasaOS-MessageBus/config"
 	"github.com/ReCasaOS/CasaOS-MessageBus/repository"
@@ -21,12 +22,24 @@ import (
 )
 
 // TestAPIRouterAuth drives the whole router (JWT middleware, request validator,
-// handlers) to check who gets in without a user token.
+// handlers) to check who gets past authentication.
 func TestAPIRouterAuth(t *testing.T) {
 	runtimePath := t.TempDir()
 	assert.NilError(t, os.WriteFile(filepath.Join(runtimePath, external.InternalSecretFilename), []byte("s3cret\n"), 0o600))
 	defer func(old string) { config.CommonInfo.RuntimePath = old }(config.CommonInfo.RuntimePath)
 	config.CommonInfo.RuntimePath = runtimePath
+
+	// user-service stand-in: external.GetPublicKey reads its address from the
+	// runtime path and fetches the JWKS from it.
+	privateKey, publicKey, err := jwt.GenerateKeyPair()
+	assert.NilError(t, err)
+	jwks, err := jwt.GenerateJwksJSON(publicKey)
+	assert.NilError(t, err)
+	userService := httptest.NewServer(jwt.JWKSHandler(jwks))
+	defer userService.Close()
+	assert.NilError(t, os.WriteFile(filepath.Join(runtimePath, external.UserServiceAddressFilename), []byte(userService.URL), 0o600))
+	token, err := jwt.GetAccessToken("admin", privateKey, 1)
+	assert.NilError(t, err)
 
 	repository, err := repository.NewDatabaseRepositoryInMemory()
 	assert.NilError(t, err)
@@ -43,6 +56,7 @@ func TestAPIRouterAuth(t *testing.T) {
 		body       = `[{"sourceID":"foo","name":"bar","propertyTypeList":[]}]`
 		lan        = "192.168.1.20:40000"
 	)
+	upgrade := map[string]string{echo.HeaderUpgrade: "websocket", echo.HeaderConnection: "Upgrade"}
 
 	tests := []struct {
 		name, method, target, remoteAddr, authorization string
@@ -58,8 +72,20 @@ func TestAPIRouterAuth(t *testing.T) {
 		{name: "LAN forwarded as loopback needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: "127.0.0.1:40000", header: map[string]string{echo.HeaderXForwardedFor: "127.0.0.1, 192.168.1.20"}, expected: http.StatusUnauthorized},
 		{name: "Host unix over TCP needs a JWT", method: http.MethodGet, target: "http://unix" + eventTypes, remoteAddr: lan, expected: http.StatusUnauthorized},
 		{name: "the unix socket passes", method: http.MethodGet, target: "http://unix" + eventTypes, remoteAddr: "@", unixSocket: true, expected: http.StatusOK},
-		// no event type for this source: 400 from the handler, past the JWT middleware
-		{name: "websocket upgrade GET passes", method: http.MethodGet, target: "/v2/message_bus/event/nobody", remoteAddr: lan, header: map[string]string{echo.HeaderUpgrade: "websocket", echo.HeaderConnection: "Upgrade"}, expected: http.StatusBadRequest},
+		{name: "LAN with a user JWT passes", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: token, expected: http.StatusOK},
+		{name: "LAN with a tampered JWT needs a valid one", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: token + "x", expected: http.StatusUnauthorized},
+		// The subscribe routes: 400 from the handler (no such type) or from
+		// engine.io (no transport), past the JWT middleware.
+		{name: "websocket subscribe to events passes", method: http.MethodGet, target: "/v2/message_bus/event/nobody", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
+		{name: "websocket subscribe to actions passes", method: http.MethodGet, target: "/v2/message_bus/action/nobody?names=x", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
+		{name: "socket.io websocket passes", method: http.MethodGet, target: "/v2/message_bus/socket.io", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
+		{name: "socket.io/ websocket passes", method: http.MethodGet, target: "/v2/message_bus/socket.io/", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
+		// The Upgrade header opens the subscribe routes only.
+		{name: "websocket upgrade on event_type needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
+		{name: "websocket upgrade on action_type needs a JWT", method: http.MethodGet, target: "/v2/message_bus/action_type", remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
+		{name: "websocket upgrade on ysk needs a JWT", method: http.MethodGet, target: "/v2/message_bus/ysk", remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
+		{name: "subscribe route without upgrade needs a JWT", method: http.MethodGet, target: "/v2/message_bus/event/nobody", remoteAddr: lan, expected: http.StatusUnauthorized},
+		{name: "socket.io polling needs a JWT", method: http.MethodPost, target: "/v2/message_bus/socket.io/", remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
 	}
 
 	for _, tt := range tests {

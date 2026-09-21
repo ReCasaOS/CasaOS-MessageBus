@@ -47,6 +47,17 @@ func fromUnixSocket(r *http.Request) bool {
 	return ok && addr.Network() == "unix"
 }
 
+// websocketSubscribeRoutes are the GET routes (as registered by codegen) a
+// client subscribes on with a WebSocket upgrade: subscribeEventWS,
+// subscribeActionWS, subscribeSIO and subscribeSIO2. Socket.IO polling is not
+// among them: the dashboard opens the websocket transport directly.
+var websocketSubscribeRoutes = map[string]bool{
+	"/v2/message_bus/event/:source_id":  true,
+	"/v2/message_bus/action/:source_id": true,
+	"/v2/message_bus/socket.io":         true,
+	"/v2/message_bus/socket.io/":        true,
+}
+
 // skipJWT reports whether a request needs no user token: it comes from one of
 // this box's services (over the unix socket, or from loopback with the internal
 // secret the gateway writes each boot), or it is a WebSocket subscribe.
@@ -58,7 +69,9 @@ func skipJWT(c echo.Context) bool {
 
 	// Browsers cannot set headers on a WebSocket and the dashboard subscribes
 	// without a token, so the event stream stays open to anyone who reaches it.
-	return r.Method == echo.GET && r.Header.Get(echo.HeaderUpgrade) == "websocket"
+	// c.Path() is the route the router matched (it runs before middleware), so
+	// the Upgrade header opens those routes only, not every GET.
+	return r.Method == echo.GET && strings.EqualFold(r.Header.Get(echo.HeaderUpgrade), "websocket") && websocketSubscribeRoutes[c.Path()]
 }
 
 func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler, error) {

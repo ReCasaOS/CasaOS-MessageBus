@@ -22,7 +22,7 @@ Delivery is fire and forget. An event nobody is subscribed to is dropped, not qu
 
 The service also owns the YSK cards on the dashboard — task and notice cards — served at `/v2/message_bus/ysk`. That is the only state it keeps of its own.
 
-Requests carry a CasaOS JWT. The unix socket, loopback peers and websocket upgrades skip it.
+Requests carry a CasaOS JWT. Loopback alone is not trusted. Three kinds of request skip the token: those on the unix socket, which only root can open; those from loopback with `Authorization: Internal <secret>`, the per-boot secret the gateway writes to `/var/run/casaos/internal.secret` (root only); and websocket upgrades on the four subscribe routes — `GET /event/{source_id}`, `GET /action/{source_id}`, `GET /socket.io` and `GET /socket.io/` — because the dashboard subscribes without a token. Whoever reaches those routes can read the event stream; every other route, socket.io polling included, needs the token.
 
 ## Where things live
 
