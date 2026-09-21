@@ -2,6 +2,7 @@ package route
 
 import (
 	"crypto/ecdsa"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +38,29 @@ func skipAccessLog(method, path, realIP, host string) bool {
 	return method == http.MethodPost && strings.HasPrefix(path, eventPublishPrefix) && fromHost(realIP, host)
 }
 
+// fromUnixSocket reports whether the request came in on the unix socket
+// listener (main.go), which only root can connect to; app-management publishes
+// its events there. The Host header ("unix" from that client) proves nothing:
+// any TCP client can send it, through the gateway too.
+func fromUnixSocket(r *http.Request) bool {
+	addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	return ok && addr.Network() == "unix"
+}
+
+// skipJWT reports whether a request needs no user token: it comes from one of
+// this box's services (over the unix socket, or from loopback with the internal
+// secret the gateway writes each boot), or it is a WebSocket subscribe.
+func skipJWT(c echo.Context) bool {
+	r := c.Request()
+	if fromUnixSocket(r) || external.IsInternalRequest(c.RealIP(), r.Header.Get(echo.HeaderAuthorization), config.CommonInfo.RuntimePath) {
+		return true
+	}
+
+	// Browsers cannot set headers on a WebSocket and the dashboard subscribes
+	// without a token, so the event stream stays open to anyone who reaches it.
+	return r.Method == echo.GET && r.Header.Get(echo.HeaderUpgrade) == "websocket"
+}
+
 func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler, error) {
 	apiRoute := NewAPIRoute(services)
 
@@ -61,18 +85,7 @@ func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler
 	}))
 
 	e.Use(echojwt.WithConfig(echojwt.Config{
-		Skipper: func(c echo.Context) bool {
-			// skip when source is unix socket or loopback
-			if fromHost(c.RealIP(), c.Request().Host) {
-				return true
-			}
-
-			if c.Request().Method == echo.GET && c.Request().Header.Get(echo.HeaderUpgrade) == "websocket" {
-				return true
-			}
-
-			return false
-		},
+		Skipper: skipJWT,
 		ParseTokenFunc: func(c echo.Context, token string) (interface{}, error) {
 			valid, claims, err := jwt.Validate(token, func() (*ecdsa.PublicKey, error) { return external.GetPublicKey(config.CommonInfo.RuntimePath) })
 			if err != nil || !valid {

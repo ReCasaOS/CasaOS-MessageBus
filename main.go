@@ -126,6 +126,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	// Requests on this socket skip authentication (route.fromUnixSocket), so only
+	// root may connect, whatever the umask. /tmp's sticky bit keeps others from
+	// replacing the file.
+	if err := os.Chmod(unixSocketPath, 0o600); err != nil {
+		panic(err)
+	}
 
 	// register at gateway
 	u, err := url.Parse(swagger.Servers[0].URL)
