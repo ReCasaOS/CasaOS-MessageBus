@@ -19,7 +19,6 @@ import (
 
 	"github.com/ReCasaOS/CasaOS-Common/external"
 	"github.com/ReCasaOS/CasaOS-Common/model"
-	"github.com/ReCasaOS/CasaOS-Common/utils/file"
 	util_http "github.com/ReCasaOS/CasaOS-Common/utils/http"
 	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-MessageBus/codegen"
@@ -69,7 +68,7 @@ func main() {
 	logger.LogInit(config.AppInfo.LogPath, config.AppInfo.LogSaveName, config.AppInfo.LogFileExt)
 
 	// repository
-	if err := file.IsNotExistMkDir(config.CommonInfo.RuntimePath); err != nil {
+	if err := os.MkdirAll(config.CommonInfo.RuntimePath, 0o755); err != nil {
 		panic(err)
 	}
 
