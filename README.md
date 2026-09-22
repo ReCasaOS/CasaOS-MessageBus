@@ -14,7 +14,7 @@ Who publishes:
 
 - **casaos** POSTs `casaos:system:utilization` every 5 seconds over loopback — CPU, memory, network, disks — plus `casaos:file:operate` while a file operation runs.
 - **local-storage** publishes `local-storage:disk:added` and its siblings, built from kernel uevents as drives appear and disappear.
-- **app-management** publishes `app:*` events — install progress, start, stop, errors — over the unix socket at `/tmp/message-bus.sock` rather than the TCP port.
+- **app-management** publishes `app:*` events — install progress, start, stop, errors — over the unix socket at `/var/run/casaos/message-bus.sock` rather than the TCP port.
 
 Who subscribes: the dashboard, over socket.io at `/v2/message_bus/socket.io/`. Its CPU, network and disk widgets redraw on each `casaos:system:utilization`; app cards follow `app:apply-changes-begin`, `app:start-end` and the rest. A plain websocket subscription to one source is also available at `GET /v2/message_bus/event/{source_id}`.
 
@@ -32,7 +32,7 @@ Requests carry a CasaOS JWT. Loopback alone is not trusted. Three kinds of reque
 | `/var/run/casaos/message-bus.db` | registered event and action types; runtime only, and services re-register on start |
 | `/var/lib/casaos/db/message-bus.db` | YSK cards and settings, kept across reboots |
 | `/var/run/casaos/message-bus.url` | the TCP address the gateway and other services read |
-| `/tmp/message-bus.sock` | the unix socket, same API |
+| `/var/run/casaos/message-bus.sock` | the unix socket, same API; root only |
 | `/var/log/casaos/message-bus.log` | log |
 
 The service picks a free loopback port at start, registers `/v2/message_bus` and `/doc/v2/message_bus` with the gateway, and writes its address to the file above. The API specification is [`api/message_bus/openapi.yaml`](api/message_bus/openapi.yaml), also served at `/doc/v2/message_bus`.

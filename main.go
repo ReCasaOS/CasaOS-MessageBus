@@ -5,8 +5,10 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,8 +46,6 @@ var (
 
 	//go:embed build/sysroot/etc/casaos/message-bus.conf.sample
 	_confSample string
-
-	unixSocketPath = "/tmp/message-bus.sock"
 )
 
 func main() {
@@ -119,16 +119,19 @@ func main() {
 		panic(err)
 	}
 
-	// remove unix socket file. don't need check whether it exists or not
-	os.Remove(unixSocketPath)
-	// socket listener
+	// socket listener, in the runtime path (created above), which only root can
+	// write: in /tmp any local user could take the name first and keep the bus
+	// from listening. A socket left by the previous run would fail the listen.
+	unixSocketPath := external.MessageBusSocketPath(config.CommonInfo.RuntimePath)
+	if err := os.Remove(unixSocketPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		panic(err)
+	}
 	socketListener, err := net.Listen("unix", unixSocketPath)
 	if err != nil {
 		panic(err)
 	}
 	// Requests on this socket skip authentication (route.fromUnixSocket), so only
-	// root may connect, whatever the umask. /tmp's sticky bit keeps others from
-	// replacing the file.
+	// root may connect, whatever the umask.
 	if err := os.Chmod(unixSocketPath, 0o600); err != nil {
 		panic(err)
 	}
