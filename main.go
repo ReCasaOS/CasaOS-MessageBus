@@ -71,6 +71,13 @@ func main() {
 	if err := os.MkdirAll(config.CommonInfo.RuntimePath, 0o755); err != nil {
 		panic(err)
 	}
+	// MkdirAll leaves an existing directory as it is, and buses before this one
+	// created it 0777: anyone could then swap the socket that lives in it.
+	if info, err := os.Stat(config.CommonInfo.RuntimePath); err == nil && info.Mode().Perm()&0o022 != 0 {
+		if err := os.Chmod(config.CommonInfo.RuntimePath, 0o755); err != nil {
+			panic(err)
+		}
+	}
 
 	databaseFilePath := filepath.Join(config.CommonInfo.RuntimePath, "message-bus.db")
 	persistDatabaseFilePath := filepath.Join(config.AppInfo.DBPath, "db", "message-bus.db")
