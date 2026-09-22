@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	github.com/CorrectRoadH/go-socket.io v1.8.0-rc.5
-	github.com/ReCasaOS/CasaOS-Common v0.4.26
+	github.com/ReCasaOS/CasaOS-Common v0.4.27
 	github.com/glebarez/sqlite v1.7.0
 	github.com/gobwas/ws v1.1.0
 	github.com/json-iterator/go v1.1.12
