@@ -1,6 +1,7 @@
 package route
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/ReCasaOS/CasaOS-MessageBus/repository"
 	"github.com/ReCasaOS/CasaOS-MessageBus/service"
 	"github.com/labstack/echo/v4"
+	echo_middleware "github.com/labstack/echo/v4/middleware"
 	"gotest.tools/assert"
 )
 
@@ -45,6 +47,12 @@ func TestAPIRouterAuth(t *testing.T) {
 	assert.NilError(t, err)
 	defer repository.Close()
 
+	// The access logger takes its output from the default config when the
+	// router is built.
+	var accessLog bytes.Buffer
+	defer func(old io.Writer) { echo_middleware.DefaultLoggerConfig.Output = old }(echo_middleware.DefaultLoggerConfig.Output)
+	echo_middleware.DefaultLoggerConfig.Output = &accessLog
+
 	services := service.NewServices(&repository)
 	swagger, err := codegen.GetSwagger()
 	assert.NilError(t, err)
@@ -55,15 +63,51 @@ func TestAPIRouterAuth(t *testing.T) {
 		eventTypes = "/v2/message_bus/event_type"
 		body       = `[{"sourceID":"foo","name":"bar","propertyTypeList":[]}]`
 		lan        = "192.168.1.20:40000"
+		loopback   = "127.0.0.1:40000"
+		polling    = "?EIO=4&transport=polling&sid=nope"
 	)
 	upgrade := map[string]string{echo.HeaderUpgrade: "websocket", echo.HeaderConnection: "Upgrade"}
+	withToken := func(target, token string) string {
+		if strings.Contains(target, "?") {
+			return target + "&token=" + token
+		}
+		return target + "?token=" + token
+	}
 
-	tests := []struct {
+	type testCase struct {
 		name, method, target, remoteAddr, authorization string
 		header                                          map[string]string
 		unixSocket                                      bool
 		expected                                        int
+	}
+
+	// The subscription routes. 400 comes from the handler (no such type) or
+	// from engine.io (no transport, unknown sid): past the JWT middleware.
+	var subscriptions []testCase
+	for _, s := range []struct {
+		name, method, target string
+		header               map[string]string
 	}{
+		{"event websocket", http.MethodGet, "/v2/message_bus/event/nobody", upgrade},
+		{"action websocket", http.MethodGet, "/v2/message_bus/action/nobody?names=x", upgrade},
+		{"socket.io websocket", http.MethodGet, "/v2/message_bus/socket.io", upgrade},
+		{"socket.io/ websocket", http.MethodGet, "/v2/message_bus/socket.io/", upgrade},
+		{"socket.io polling GET", http.MethodGet, "/v2/message_bus/socket.io" + polling, nil},
+		{"socket.io/ polling GET", http.MethodGet, "/v2/message_bus/socket.io/" + polling, nil},
+		{"socket.io polling POST", http.MethodPost, "/v2/message_bus/socket.io" + polling, nil},
+		{"socket.io/ polling POST", http.MethodPost, "/v2/message_bus/socket.io/" + polling, nil},
+	} {
+		subscriptions = append(subscriptions,
+			testCase{name: s.name + " without a credential needs a JWT", method: s.method, target: s.target, remoteAddr: lan, header: s.header, expected: http.StatusUnauthorized},
+			testCase{name: s.name + " with ?token passes", method: s.method, target: withToken(s.target, token), remoteAddr: lan, header: s.header, expected: http.StatusBadRequest},
+			testCase{name: s.name + " with a tampered ?token needs a valid one", method: s.method, target: withToken(s.target, token+"x"), remoteAddr: lan, header: s.header, expected: http.StatusUnauthorized},
+			testCase{name: s.name + " with a user JWT header passes", method: s.method, target: s.target, remoteAddr: lan, authorization: token, header: s.header, expected: http.StatusBadRequest},
+			testCase{name: s.name + " with the secret from loopback passes", method: s.method, target: s.target, remoteAddr: loopback, authorization: "Internal s3cret", header: s.header, expected: http.StatusBadRequest},
+			testCase{name: s.name + " with the secret from the LAN needs a JWT", method: s.method, target: s.target, remoteAddr: lan, authorization: "Internal s3cret", header: s.header, expected: http.StatusUnauthorized},
+		)
+	}
+
+	tests := append(subscriptions, []testCase{
 		{name: "loopback without the secret needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: "127.0.0.1:40000", expected: http.StatusUnauthorized},
 		{name: "loopback with a wrong secret needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: "127.0.0.1:40000", authorization: "Internal nope", expected: http.StatusUnauthorized},
 		{name: "loopback with the secret passes", method: http.MethodPost, target: eventTypes, remoteAddr: "127.0.0.1:40000", authorization: "Internal s3cret", expected: http.StatusOK},
@@ -74,19 +118,16 @@ func TestAPIRouterAuth(t *testing.T) {
 		{name: "the unix socket passes", method: http.MethodGet, target: "http://unix" + eventTypes, remoteAddr: "@", unixSocket: true, expected: http.StatusOK},
 		{name: "LAN with a user JWT passes", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: token, expected: http.StatusOK},
 		{name: "LAN with a tampered JWT needs a valid one", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: token + "x", expected: http.StatusUnauthorized},
-		// The subscribe routes: 400 from the handler (no such type) or from
-		// engine.io (no transport), past the JWT middleware.
-		{name: "websocket subscribe to events passes", method: http.MethodGet, target: "/v2/message_bus/event/nobody", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
-		{name: "websocket subscribe to actions passes", method: http.MethodGet, target: "/v2/message_bus/action/nobody?names=x", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
-		{name: "socket.io websocket passes", method: http.MethodGet, target: "/v2/message_bus/socket.io", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
-		{name: "socket.io/ websocket passes", method: http.MethodGet, target: "/v2/message_bus/socket.io/", remoteAddr: lan, header: upgrade, expected: http.StatusBadRequest},
-		// The Upgrade header opens the subscribe routes only.
+		// ?token is read on the subscription routes only.
+		{name: "?token on event_type needs a JWT", method: http.MethodGet, target: withToken(eventTypes, token), remoteAddr: lan, expected: http.StatusUnauthorized},
+		{name: "?token on an event type registration needs a JWT", method: http.MethodPost, target: withToken(eventTypes, token), remoteAddr: lan, expected: http.StatusUnauthorized},
+		{name: "?token on an event publish needs a JWT", method: http.MethodPost, target: withToken("/v2/message_bus/event/nobody/x", token), remoteAddr: lan, expected: http.StatusUnauthorized},
+		{name: "?token on ysk needs a JWT", method: http.MethodGet, target: withToken("/v2/message_bus/ysk", token), remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
+		{name: "?token with POST on the event subscribe path needs a JWT", method: http.MethodPost, target: withToken("/v2/message_bus/event/nobody", token), remoteAddr: lan, expected: http.StatusUnauthorized},
+		// A websocket upgrade opens nothing by itself.
 		{name: "websocket upgrade on event_type needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
 		{name: "websocket upgrade on action_type needs a JWT", method: http.MethodGet, target: "/v2/message_bus/action_type", remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
-		{name: "websocket upgrade on ysk needs a JWT", method: http.MethodGet, target: "/v2/message_bus/ysk", remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
-		{name: "subscribe route without upgrade needs a JWT", method: http.MethodGet, target: "/v2/message_bus/event/nobody", remoteAddr: lan, expected: http.StatusUnauthorized},
-		{name: "socket.io polling needs a JWT", method: http.MethodPost, target: "/v2/message_bus/socket.io/", remoteAddr: lan, header: upgrade, expected: http.StatusUnauthorized},
-	}
+	}...)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,7 +145,7 @@ func TestAPIRouterAuth(t *testing.T) {
 				req.Header.Set(k, v)
 			}
 			if tt.unixSocket {
-				req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, &net.UnixAddr{Name: "/tmp/message-bus.sock", Net: "unix"}))
+				req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, &net.UnixAddr{Name: external.MessageBusSocketPath(runtimePath), Net: "unix"}))
 			}
 
 			rec := httptest.NewRecorder()
@@ -112,6 +153,10 @@ func TestAPIRouterAuth(t *testing.T) {
 			assert.Equal(t, rec.Code, tt.expected, rec.Body.String())
 		})
 	}
+
+	// The access log keeps the path of the ?token requests, not their query.
+	assert.Assert(t, strings.Contains(accessLog.String(), `"path":"/v2/message_bus/event/nobody"`), accessLog.String())
+	assert.Assert(t, !strings.Contains(accessLog.String(), token), "the access log holds a token")
 }
 
 func TestSkipAccessLog(t *testing.T) {

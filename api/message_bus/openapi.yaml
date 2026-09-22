@@ -177,6 +177,9 @@ paths:
 
         > `names` can be specified in the query string to subscribe to specific event types.
       operationId: subscribeEventWS
+      security:
+        - access_token: []
+        - access_token_query: []
       tags:
         - WebSocket Endpoints
       parameters:
@@ -278,6 +281,9 @@ paths:
 
         > `names` can be specified in the query string to subscribe to specific action types.
       operationId: subscribeActionWS
+      security:
+        - access_token: []
+        - access_token_query: []
       tags:
         - WebSocket Endpoints
       parameters:
@@ -297,6 +303,9 @@ paths:
         - SocketIO `room` should be either `event` or `action`
 
       operationId: subscribeSIO
+      security:
+        - access_token: []
+        - access_token_query: []
       tags:
         - SocketIO Endpoints
       responses:
@@ -312,6 +321,9 @@ paths:
       description: |
         Poll events and actions by via SocketIO.
       operationId: pollSIO
+      security:
+        - access_token: []
+        - access_token_query: []
       tags:
         - SocketIO Endpoints
       responses:
@@ -325,6 +337,9 @@ paths:
       description: |
         > Same as `/socket.io` except it comes with a trailing slash `/` - a workaround to maximize compatibility
       operationId: subscribeSIO2
+      security:
+        - access_token: []
+        - access_token_query: []
       responses:
         "101":
           description: |
@@ -338,6 +353,9 @@ paths:
       description: |
         > Same as `/socket.io` except it comes with a trailing slash `/` - a workaround to maximize compatibility
       operationId: pollSIO2
+      security:
+        - access_token: []
+        - access_token_query: []
       responses:
         "200":
           description: |
@@ -380,6 +398,14 @@ components:
       type: apiKey
       in: header
       name: Authorization
+      description: |
+        A CasaOS user JWT. This box's own services send `Internal <secret>` instead, from loopback, with the per-boot secret the gateway writes to `/var/run/casaos/internal.secret`; requests on the unix socket need neither.
+    access_token_query:
+      type: apiKey
+      in: query
+      name: token
+      description: |
+        The same user JWT, in the query string, because browsers cannot set headers on a WebSocket. Read on the subscription routes only (the WebSocket and socket.io endpoints) and ignored everywhere else.
 
   parameters:
     SourceID:

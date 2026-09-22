@@ -47,32 +47,41 @@ func fromUnixSocket(r *http.Request) bool {
 	return ok && addr.Network() == "unix"
 }
 
-// websocketSubscribeRoutes are the GET routes (as registered by codegen) a
-// client subscribes on with a WebSocket upgrade: subscribeEventWS,
-// subscribeActionWS, subscribeSIO and subscribeSIO2. Socket.IO polling is not
-// among them: the dashboard opens the websocket transport directly.
-var websocketSubscribeRoutes = map[string]bool{
-	"/v2/message_bus/event/:source_id":  true,
-	"/v2/message_bus/action/:source_id": true,
-	"/v2/message_bus/socket.io":         true,
-	"/v2/message_bus/socket.io/":        true,
+// subscriptionRoutes are the routes, method and path as codegen registers them,
+// a client subscribes on: subscribeEventWS, subscribeActionWS and the socket.io
+// endpoints, websocket and polling alike. Browsers cannot set headers on a
+// WebSocket, so these routes, and no other, also take the user JWT from the
+// `token` query parameter.
+var subscriptionRoutes = map[string]bool{
+	"GET /v2/message_bus/event/:source_id":  true,
+	"GET /v2/message_bus/action/:source_id": true,
+	"GET /v2/message_bus/socket.io":         true,
+	"POST /v2/message_bus/socket.io":        true,
+	"GET /v2/message_bus/socket.io/":        true,
+	"POST /v2/message_bus/socket.io/":       true,
 }
 
 // skipJWT reports whether a request needs no user token: it comes from one of
-// this box's services (over the unix socket, or from loopback with the internal
-// secret the gateway writes each boot), or it is a WebSocket subscribe.
+// this box's services, over the unix socket or from loopback with the internal
+// secret the gateway writes each boot.
 func skipJWT(c echo.Context) bool {
 	r := c.Request()
-	if fromUnixSocket(r) || external.IsInternalRequest(c.RealIP(), r.Header.Get(echo.HeaderAuthorization), config.CommonInfo.RuntimePath) {
-		return true
-	}
-
-	// Browsers cannot set headers on a WebSocket and the dashboard subscribes
-	// without a token, so the event stream stays open to anyone who reaches it.
-	// c.Path() is the route the router matched (it runs before middleware), so
-	// the Upgrade header opens those routes only, not every GET.
-	return r.Method == echo.GET && strings.EqualFold(r.Header.Get(echo.HeaderUpgrade), "websocket") && websocketSubscribeRoutes[c.Path()]
+	return fromUnixSocket(r) || external.IsInternalRequest(c.RealIP(), r.Header.Get(echo.HeaderAuthorization), config.CommonInfo.RuntimePath)
 }
+
+// queryToken extracts the JWT from the `token` query parameter on the
+// subscription routes only. c.Path() is the route the router matched: it runs
+// before middleware.
+func queryToken(c echo.Context) ([]string, error) {
+	if !subscriptionRoutes[c.Request().Method+" "+c.Path()] {
+		return nil, nil
+	}
+	return []string{c.QueryParam("token")}, nil
+}
+
+// accessLogFormat is echo's default access log with the path in place of the
+// request URI: the query string carries the subscription token.
+var accessLogFormat = strings.Replace(echo_middleware.DefaultLoggerConfig.Format, `"uri":"${uri}"`, `"path":"${path}"`, 1)
 
 func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler, error) {
 	apiRoute := NewAPIRoute(services)
@@ -91,6 +100,7 @@ func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler
 	e.Use(echo_middleware.Gzip())
 	e.Use(echo_middleware.Recover())
 	e.Use(echo_middleware.LoggerWithConfig(echo_middleware.LoggerConfig{
+		Format: accessLogFormat,
 		Skipper: func(c echo.Context) bool {
 			r := c.Request()
 			return skipAccessLog(r.Method, r.URL.Path, c.RealIP(), r.Host)
@@ -113,6 +123,7 @@ func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler
 			func(c echo.Context) ([]string, error) {
 				return []string{c.Request().Header.Get(echo.HeaderAuthorization)}, nil
 			},
+			queryToken,
 		},
 	}))
 

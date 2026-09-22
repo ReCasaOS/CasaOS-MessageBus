@@ -22,7 +22,7 @@ Delivery is fire and forget. An event nobody is subscribed to is dropped, not qu
 
 The service also owns the YSK cards on the dashboard — task and notice cards — served at `/v2/message_bus/ysk`. That is the only state it keeps of its own.
 
-Requests carry a CasaOS JWT. Loopback alone is not trusted. Three kinds of request skip the token: those on the unix socket, which only root can open; those from loopback with `Authorization: Internal <secret>`, the per-boot secret the gateway writes to `/var/run/casaos/internal.secret` (root only); and websocket upgrades on the four subscribe routes — `GET /event/{source_id}`, `GET /action/{source_id}`, `GET /socket.io` and `GET /socket.io/` — because the dashboard subscribes without a token. Whoever reaches those routes can read the event stream; every other route, socket.io polling included, needs the token.
+Every request carries a CasaOS JWT in `Authorization`, subscriptions included. Loopback alone is not trusted. Two kinds of request skip the token: those on the unix socket, which only root can open, and those from loopback with `Authorization: Internal <secret>`, the per-boot secret the gateway writes to `/var/run/casaos/internal.secret` (root only) — how user-service subscribes. Browsers cannot set headers on a WebSocket, so the subscription routes — `GET /event/{source_id}`, `GET /action/{source_id}` and `GET`/`POST` on `/socket.io` and `/socket.io/`, websocket and polling alike — also take the JWT from the `token` query parameter, as the dashboard sends it. Every other route ignores that parameter. The access log records the request path without its query string, so the token never reaches the log.
 
 ## Where things live
 
@@ -50,6 +50,8 @@ What a release contains, and how it is built, is described in [CasaOS-Install](h
 ## What this fork changed
 
 **The access log no longer records host-side event publishes.** casaos's 5-second telemetry produced one JSON access-log line per publish, which systemd hands to journald: about 17 000 lines a day that buried every real request. The telemetry rate is unchanged — it is the dashboard's only realtime feed — and the log line is skipped instead. The skip is narrow: POST on the event publish route, and only from the unix socket or a loopback peer. Websocket subscribes, event-type registrations, actions and anything from the LAN stay logged ([CasaOS #2211](https://github.com/IceWhaleTech/CasaOS/issues/2211)).
+
+**Subscriptions need a credential, and the unix socket left `/tmp`.** Upstream let any websocket upgrade on the subscribe routes through without a token, so whoever reached the dashboard's port could read every event; a subscription now needs a user JWT (header or `?token=`) or the internal secret. The socket moved out of `/tmp`, where any local user could take its name first and keep the bus from listening, to the runtime directory, which only root can write.
 
 **The Go module is now `github.com/ReCasaOS/CasaOS-MessageBus`, built against `github.com/ReCasaOS/CasaOS-Common`,** so log lines, stack traces and `go version -m` on the shipped binary name the fork that ships them rather than upstream.
 
