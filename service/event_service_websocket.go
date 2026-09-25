@@ -12,6 +12,11 @@ import (
 	"go.uber.org/zap"
 )
 
+// subscriberBuffer is how many events a subscriber may be behind before it
+// misses one: a backup's error right after its begin, or two containers dying
+// together, is more than one.
+const subscriberBuffer = 64
+
 type EventServiceWS struct {
 	typeService *EventTypeService
 
@@ -35,6 +40,9 @@ func (s *EventServiceWS) Publish(event model.Event) {
 
 	// TODO - ensure properties are valid for event type
 
+	// Waits for the dispatch to take it, never long: the route publishes from a
+	// goroutine of its own, and an event dropped here because the dispatch was
+	// busy with the one before was an alert never sent.
 	select {
 	case s.inboundChannel <- event:
 
@@ -43,8 +51,6 @@ func (s *EventServiceWS) Publish(event model.Event) {
 			logger.Info(err.Error())
 		}
 		return
-
-	default: // drop event if no one is listening
 	}
 }
 
@@ -83,7 +89,7 @@ func (s *EventServiceWS) Subscribe(sourceID string, names []string) (chan model.
 			s.subscriberChannels[sourceID] = make(map[string][]chan model.Event)
 		}
 
-		c := make(chan model.Event, 1)
+		c := make(chan model.Event, subscriberBuffer)
 
 		for _, name := range names {
 			if s.subscriberChannels[sourceID][name] == nil {
@@ -98,6 +104,12 @@ func (s *EventServiceWS) Subscribe(sourceID string, names []string) (chan model.
 }
 
 func (s *EventServiceWS) Unsubscribe(sourceID string, name string, c chan model.Event) error {
+	// Once, for the whole call. Taken per subscriber looked at, its unlock
+	// deferred, it deadlocked the bus on the second: every subscription after
+	// that hung once its websocket was open, and its events never came.
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	if s.subscriberChannels == nil {
 		return ErrSubscriberChannelsNotFound
 	}
@@ -111,15 +123,8 @@ func (s *EventServiceWS) Unsubscribe(sourceID string, name string, c chan model.
 	}
 
 	for i, subscriber := range s.subscriberChannels[sourceID][name] {
-		mutex.Lock()
-		defer mutex.Unlock()
-
 		if subscriber == c {
 			logger.Info("unsubscribing from event type", zap.String("sourceID", sourceID), zap.String("name", name), zap.Int("subscriber", i))
-			if i >= len(s.subscriberChannels[sourceID][name]) {
-				logger.Error("the i-th subscriber is removed before we get here - concurrency issue?", zap.Int("subscriber", i), zap.Int("total", len(s.subscriberChannels[sourceID][name])))
-				return ErrAlreadySubscribed
-			}
 			s.subscriberChannels[sourceID][name] = append(s.subscriberChannels[sourceID][name][:i], s.subscriberChannels[sourceID][name][i+1:]...)
 			return nil
 		}
@@ -182,52 +187,47 @@ func (s *EventServiceWS) Start(ctx *context.Context) {
 				return
 			}
 
-			if s.subscriberChannels == nil {
-				continue
-			}
+			// Under the lock Subscribe and Unsubscribe change the lists with: read
+			// while they change, a map can bring the bus down, and a subscriber
+			// just gone has its channel closed.
+			func() {
+				mutex.Lock()
+				defer mutex.Unlock()
 
-			if s.subscriberChannels[event.SourceID] == nil {
-				continue
-			}
-
-			if s.subscriberChannels[event.SourceID][event.Name] == nil {
-				continue
-			}
-
-			for _, c := range s.subscriberChannels[event.SourceID][event.Name] {
-				select {
-				case c <- event:
-				case <-(*s.ctx).Done():
+				if s.subscriberChannels == nil || s.subscriberChannels[event.SourceID] == nil {
 					return
-				default: // drop event if no one is listening
-					continue
 				}
-			}
+
+				for _, c := range s.subscriberChannels[event.SourceID][event.Name] {
+					select {
+					case c <- event:
+					default: // a subscriber this far behind misses it: the bus waits for none
+					}
+				}
+			}()
 
 		case <-ticker.C:
-			if s.subscriberChannels == nil {
-				continue
-			}
-
 			heartbeat := model.Event{
 				SourceID:  common.MessageBusSourceID,
 				Name:      common.MessageBusHeartbeatName,
 				Timestamp: time.Now().Unix(),
 			}
 
-			for _, source := range s.subscriberChannels {
-				for _, subscribers := range source {
-					for _, subscriber := range subscribers {
-						select {
-						case subscriber <- heartbeat:
-						case <-(*s.ctx).Done():
-							return
-						default: // drop event if no one is listening
-							continue
+			func() {
+				mutex.Lock()
+				defer mutex.Unlock()
+
+				for _, source := range s.subscriberChannels {
+					for _, subscribers := range source {
+						for _, subscriber := range subscribers {
+							select {
+							case subscriber <- heartbeat:
+							default: // one already waiting does as well
+							}
 						}
 					}
 				}
-			}
+			}()
 		}
 	}
 }

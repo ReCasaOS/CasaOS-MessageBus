@@ -90,6 +90,11 @@ func (s *ActionServiceWS) Subscribe(sourceID string, names []string) (chan model
 }
 
 func (s *ActionServiceWS) Unsubscribe(sourceID string, name string, c chan model.Action) error {
+	// once, for the whole call: taken per subscriber looked at, its unlock
+	// deferred, it deadlocked on the second (see EventServiceWS.Unsubscribe)
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	if s.subscriberChannels == nil {
 		return ErrSubscriberChannelsNotFound
 	}
@@ -103,14 +108,7 @@ func (s *ActionServiceWS) Unsubscribe(sourceID string, name string, c chan model
 	}
 
 	for i, subscriber := range s.subscriberChannels[sourceID][name] {
-		s.mutex.Lock()
-		defer s.mutex.Unlock()
-
 		if subscriber == c {
-			if i >= len(s.subscriberChannels[sourceID][name]) {
-				logger.Error("the i-th subscriber is removed before we get here - concurrency issue?", zap.Int("subscriber", i), zap.Int("total", len(s.subscriberChannels[sourceID][name])))
-				return ErrAlreadySubscribed
-			}
 			s.subscriberChannels[sourceID][name] = append(s.subscriberChannels[sourceID][name][:i], s.subscriberChannels[sourceID][name][i+1:]...)
 			return nil
 		}
