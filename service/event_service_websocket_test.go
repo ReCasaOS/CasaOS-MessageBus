@@ -102,3 +102,40 @@ func TestEventsPublishedTogetherAllArrive(t *testing.T) {
 		}
 	}
 }
+
+// A subscription made before Start (YSK subscribes right after Services.Start,
+// which starts the dispatch in a goroutine) must survive Start.
+func TestSubscriptionBeforeStartSurvivesStart(t *testing.T) {
+	ws := newEventService(t)
+
+	channel, err := ws.Subscribe("app-management", []string{"backup:error"})
+	assert.NilError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ws.Start(&ctx)
+
+	// Publish drops events until the dispatch runs: publish again until one arrives.
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case event := <-channel:
+			assert.Equal(t, event.Name, "backup:error")
+			return
+		case <-tick.C:
+			ws.Publish(model.Event{SourceID: "app-management", Name: "backup:error"})
+		case <-deadline:
+			t.Fatal("a subscription made before Start never received an event")
+		}
+	}
+}
+
+// A Publish before Start is dropped; it used to dereference the nil context.
+func TestPublishBeforeStartIsDropped(t *testing.T) {
+	ws := newEventService(t)
+	within(t, "Publish before Start", func() {
+		ws.Publish(model.Event{SourceID: "app-management", Name: "backup:error"})
+	})
+}

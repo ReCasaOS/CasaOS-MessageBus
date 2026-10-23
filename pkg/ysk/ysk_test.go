@@ -25,9 +25,8 @@ func setup(t *testing.T) (*service.EventServiceWS, *service.YSKService, func()) 
 
 	ctx := context.Background()
 	go s.Start(&ctx)
-	// EventServiceWS exposes no readiness signal and Publish dereferences the
-	// context it installs in Start, so the boot wait cannot be made conditional.
-	// Subscribing before Start would also be wiped by its subscriberChannels reset.
+	// EventServiceWS exposes no readiness signal and Publish drops events until
+	// Start has run, so the boot wait cannot be made conditional.
 	time.Sleep(1 * time.Second)
 
 	return wsService, yskService, func() {

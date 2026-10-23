@@ -23,8 +23,10 @@ type ActionServiceWS struct {
 }
 
 func (s *ActionServiceWS) Trigger(action model.Action) {
-	if s.inboundChannel == nil {
+	// before Start: drop (the select below dereferences ctx)
+	if s.inboundChannel == nil || s.ctx == nil {
 		logger.Error("error when triggering action via websocket", zap.Error(ErrInboundChannelNotFound))
+		return
 	}
 
 	if action.Timestamp == 0 {
@@ -122,7 +124,10 @@ func (s *ActionServiceWS) Start(ctx *context.Context) {
 	s.mutex = sync.Mutex{}
 
 	s.inboundChannel = make(chan model.Action)
-	s.subscriberChannels = make(map[string]map[string][]chan model.Action)
+	// keep subscriptions made before Start (see EventServiceWS.Start)
+	if s.subscriberChannels == nil {
+		s.subscriberChannels = make(map[string]map[string][]chan model.Action)
+	}
 	s.stop = make(chan struct{})
 
 	defer func() {
