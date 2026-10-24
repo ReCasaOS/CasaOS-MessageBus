@@ -23,11 +23,29 @@ type EventServiceWS struct {
 	ctx  *context.Context
 	stop chan struct{}
 
+	// ready: closed once Start has installed its state; Publish delivers from then on
+	ready     chan struct{}
+	readyOnce sync.Once
+
 	inboundChannel     chan model.Event
 	subscriberChannels map[string]map[string][]chan model.Event
 }
 
 var mutex = &sync.Mutex{}
+
+// Ready is closed once Start runs: events published from then on are delivered.
+func (s *EventServiceWS) Ready() <-chan struct{} {
+	mutex.Lock()
+	defer mutex.Unlock()
+	return s.readyLocked()
+}
+
+func (s *EventServiceWS) readyLocked() chan struct{} {
+	if s.ready == nil {
+		s.ready = make(chan struct{})
+	}
+	return s.ready
+}
 
 func (s *EventServiceWS) Publish(event model.Event) {
 	// Start runs in a goroutine, sets both under the lock; before that: drop (no nil-ctx panic)
@@ -37,7 +55,7 @@ func (s *EventServiceWS) Publish(event model.Event) {
 		return s.inboundChannel, s.ctx
 	}()
 	if inboundChannel == nil || ctx == nil {
-		logger.Error("error when publishing event via websocket", zap.Error(ErrInboundChannelNotFound))
+		logger.Warn("event published before the bus started: dropped", zap.String("sourceID", event.SourceID), zap.String("name", event.Name))
 		return
 	}
 
@@ -141,7 +159,7 @@ func (s *EventServiceWS) Unsubscribe(sourceID string, name string, c chan model.
 }
 
 func (s *EventServiceWS) Start(ctx *context.Context) {
-	func() {
+	inboundChannel := func() chan model.Event {
 		mutex.Lock()
 		defer mutex.Unlock()
 
@@ -153,9 +171,15 @@ func (s *EventServiceWS) Start(ctx *context.Context) {
 			s.subscriberChannels = make(map[string]map[string][]chan model.Event)
 		}
 		s.stop = make(chan struct{})
+		ready := s.readyLocked()
+		s.readyOnce.Do(func() { close(ready) })
+		return s.inboundChannel
 	}()
 
 	defer func() {
+		mutex.Lock()
+		defer mutex.Unlock()
+
 		if s.subscriberChannels != nil {
 			for sourceID, source := range s.subscriberChannels {
 				for eventName, subscribers := range source {
@@ -189,10 +213,10 @@ func (s *EventServiceWS) Start(ctx *context.Context) {
 	for {
 		select {
 
-		case <-(*s.ctx).Done():
+		case <-(*ctx).Done():
 			return
 
-		case event, ok := <-s.inboundChannel:
+		case event, ok := <-inboundChannel:
 			if !ok {
 				return
 			}

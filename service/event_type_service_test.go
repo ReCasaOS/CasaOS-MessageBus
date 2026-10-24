@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 	"testing"
-	"time"
 
-	"github.com/ReCasaOS/CasaOS-Common/utils/logger"
 	"github.com/ReCasaOS/CasaOS-MessageBus/model"
 	"github.com/ReCasaOS/CasaOS-MessageBus/repository"
 	"go.uber.org/goleak"
@@ -13,7 +11,6 @@ import (
 )
 
 func TestEventTypeService(t *testing.T) {
-	logger.LogInitConsoleOnly() // Publish logs while the loop is not up yet
 	defer goleak.VerifyNone(t)
 
 	// new repository
@@ -30,6 +27,7 @@ func TestEventTypeService(t *testing.T) {
 	defer cancel()
 
 	go wsService.Start(&ctx)
+	<-wsService.Ready()
 
 	sourceID := "Foo"
 	eventNames := []string{"Bar", "Baz"}
@@ -93,25 +91,10 @@ func TestEventTypeService(t *testing.T) {
 			// },
 		}
 
-		// Start runs in a goroutine; Publish drops until the loop runs → republish
-		actualEvent := publishUntilReceived(t, wsService, expectedEvent, outputChannel)
-		assert.DeepEqual(t, model.Event{SourceID: actualEvent.SourceID, Name: actualEvent.Name, Properties: actualEvent.Properties}, expectedEvent)
-	}
-}
+		wsService.Publish(expectedEvent)
 
-func publishUntilReceived(t *testing.T, wsService *EventServiceWS, event model.Event, received <-chan model.Event) model.Event {
-	t.Helper()
-	deadline := time.After(10 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		wsService.Publish(event)
-		select {
-		case actual := <-received:
-			return actual
-		case <-tick.C:
-		case <-deadline:
-			t.Fatalf("event %s/%s never arrived", event.SourceID, event.Name)
-		}
+		actualEvent, ok := <-outputChannel
+		assert.Equal(t, ok, true)
+		assert.DeepEqual(t, model.Event{SourceID: actualEvent.SourceID, Name: actualEvent.Name, Properties: actualEvent.Properties}, expectedEvent)
 	}
 }

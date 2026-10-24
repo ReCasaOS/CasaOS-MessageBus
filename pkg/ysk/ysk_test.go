@@ -25,9 +25,7 @@ func setup(t *testing.T) (*service.EventServiceWS, *service.YSKService, func()) 
 
 	ctx := context.Background()
 	go s.Start(&ctx)
-	// EventServiceWS exposes no readiness signal and Publish drops events until
-	// Start has run, so the boot wait cannot be made conditional.
-	time.Sleep(1 * time.Second)
+	<-wsService.Ready()
 
 	return wsService, yskService, func() {
 		repository.Close()

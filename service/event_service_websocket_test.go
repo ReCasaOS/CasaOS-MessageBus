@@ -114,21 +114,16 @@ func TestSubscriptionBeforeStartSurvivesStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go ws.Start(&ctx)
+	<-ws.Ready()
 
-	// Publish drops events until the dispatch runs: publish again until one arrives.
-	deadline := time.After(10 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		select {
-		case event := <-channel:
-			assert.Equal(t, event.Name, "backup:error")
-			return
-		case <-tick.C:
-			ws.Publish(model.Event{SourceID: "app-management", Name: "backup:error"})
-		case <-deadline:
-			t.Fatal("a subscription made before Start never received an event")
-		}
+	within(t, "Publish after Start", func() {
+		ws.Publish(model.Event{SourceID: "app-management", Name: "backup:error"})
+	})
+	select {
+	case event := <-channel:
+		assert.Equal(t, event.Name, "backup:error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("a subscription made before Start never received an event")
 	}
 }
 
