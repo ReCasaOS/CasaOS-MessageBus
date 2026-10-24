@@ -118,6 +118,10 @@ func TestAPIRouterAuth(t *testing.T) {
 		{name: "the unix socket passes", method: http.MethodGet, target: "http://unix" + eventTypes, remoteAddr: "@", unixSocket: true, expected: http.StatusOK},
 		{name: "LAN with a user JWT passes", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: token, expected: http.StatusOK},
 		{name: "LAN with a tampered JWT needs a valid one", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: token + "x", expected: http.StatusUnauthorized},
+		{name: "LAN with a Bearer JWT passes", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: "Bearer " + token, expected: http.StatusOK},
+		{name: "LAN with a lower-case bearer JWT passes", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: "bearer " + token, expected: http.StatusOK},
+		{name: "LAN with the JWT under another scheme needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: "Basic " + token, expected: http.StatusUnauthorized},
+		{name: "LAN with the Bearer scheme alone needs a JWT", method: http.MethodGet, target: eventTypes, remoteAddr: lan, authorization: "Bearer", expected: http.StatusUnauthorized},
 		// ?token is read on the subscription routes only.
 		{name: "?token on event_type needs a JWT", method: http.MethodGet, target: withToken(eventTypes, token), remoteAddr: lan, expected: http.StatusUnauthorized},
 		{name: "?token on an event type registration needs a JWT", method: http.MethodPost, target: withToken(eventTypes, token), remoteAddr: lan, expected: http.StatusUnauthorized},
