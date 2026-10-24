@@ -200,7 +200,7 @@ func (s *EventServiceWS) Start(ctx *context.Context) {
 			s.subscriberChannels = nil
 		}
 
-		close(s.inboundChannel)
+		// not closed: a Publish/Trigger may hold it; senders select on ctx.Done, which ended the loop
 		s.inboundChannel = nil
 
 		close(s.stop)

@@ -108,7 +108,7 @@ func (s *ActionServiceWS) Subscribe(sourceID string, names []string) (chan model
 		s.subscriberChannels[sourceID] = make(map[string][]chan model.Action)
 	}
 
-	c := make(chan model.Action, 1)
+	c := make(chan model.Action, subscriberBuffer)
 
 	for _, name := range names {
 		if s.subscriberChannels[sourceID][name] == nil {
@@ -190,7 +190,7 @@ func (s *ActionServiceWS) Start(ctx *context.Context) {
 			s.subscriberChannels = nil
 		}
 
-		close(s.inboundChannel)
+		// not closed: a Publish/Trigger may hold it; senders select on ctx.Done, which ended the loop
 		s.inboundChannel = nil
 
 		close(s.stop)
