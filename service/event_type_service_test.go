@@ -27,6 +27,7 @@ func TestEventTypeService(t *testing.T) {
 	defer cancel()
 
 	go wsService.Start(&ctx)
+	<-wsService.Ready()
 
 	sourceID := "Foo"
 	eventNames := []string{"Bar", "Baz"}
@@ -91,7 +92,6 @@ func TestEventTypeService(t *testing.T) {
 		}
 
 		wsService.Publish(expectedEvent)
-		assert.NilError(t, err)
 
 		actualEvent, ok := <-outputChannel
 		assert.Equal(t, ok, true)

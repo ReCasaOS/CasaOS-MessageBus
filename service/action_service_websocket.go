@@ -14,17 +14,44 @@ import (
 type ActionServiceWS struct {
 	typeService *ActionTypeService
 
-	ctx   *context.Context
+	// mutex guards every field below: Start runs in a goroutine of its own,
+	// Trigger and Subscribe come from the routes
 	mutex sync.Mutex
+	ctx   *context.Context
 	stop  chan struct{}
 
 	inboundChannel     chan model.Action
 	subscriberChannels map[string]map[string][]chan model.Action
+
+	// ready: closed once Start has installed its state; Trigger delivers from then on
+	ready     chan struct{}
+	readyOnce sync.Once
+}
+
+// Ready is closed once Start runs: actions triggered from then on are delivered.
+func (s *ActionServiceWS) Ready() <-chan struct{} {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return s.readyLocked()
+}
+
+func (s *ActionServiceWS) readyLocked() chan struct{} {
+	if s.ready == nil {
+		s.ready = make(chan struct{})
+	}
+	return s.ready
 }
 
 func (s *ActionServiceWS) Trigger(action model.Action) {
-	if s.inboundChannel == nil {
-		logger.Error("error when triggering action via websocket", zap.Error(ErrInboundChannelNotFound))
+	// Start runs in a goroutine, sets both under the lock; before that: drop (no nil-ctx panic)
+	inboundChannel, ctx := func() (chan model.Action, *context.Context) {
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+		return s.inboundChannel, s.ctx
+	}()
+	if inboundChannel == nil || ctx == nil {
+		logger.Warn("action triggered before the bus started: dropped", zap.String("sourceID", action.SourceID), zap.String("name", action.Name))
+		return
 	}
 
 	if action.Timestamp == 0 {
@@ -33,16 +60,17 @@ func (s *ActionServiceWS) Trigger(action model.Action) {
 
 	// TODO - ensure properties are valid for action type
 
+	// Waits for the dispatch to take it, never long (it waits for no
+	// subscriber), as EventServiceWS.Publish does: the route triggers from a
+	// goroutine of its own.
 	select {
-	case s.inboundChannel <- action:
+	case inboundChannel <- action:
 
-	case <-(*s.ctx).Done():
-		if err := (*s.ctx).Err(); err != nil {
+	case <-(*ctx).Done():
+		if err := (*ctx).Err(); err != nil {
 			logger.Info(err.Error())
 		}
 		return
-
-	default: // drop action if no one is listening
 	}
 }
 
@@ -68,6 +96,9 @@ func (s *ActionServiceWS) Subscribe(sourceID string, names []string) (chan model
 			return nil, ErrActionNameNotFound
 		}
 	}
+
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
 	if s.subscriberChannels == nil {
 		s.subscriberChannels = make(map[string]map[string][]chan model.Action)
@@ -118,14 +149,27 @@ func (s *ActionServiceWS) Unsubscribe(sourceID string, name string, c chan model
 }
 
 func (s *ActionServiceWS) Start(ctx *context.Context) {
-	s.ctx = ctx
-	s.mutex = sync.Mutex{}
+	inboundChannel := func() chan model.Action {
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
 
-	s.inboundChannel = make(chan model.Action)
-	s.subscriberChannels = make(map[string]map[string][]chan model.Action)
-	s.stop = make(chan struct{})
+		s.ctx = ctx
+
+		s.inboundChannel = make(chan model.Action)
+		// keep subscriptions made before Start (see EventServiceWS.Start)
+		if s.subscriberChannels == nil {
+			s.subscriberChannels = make(map[string]map[string][]chan model.Action)
+		}
+		s.stop = make(chan struct{})
+		ready := s.readyLocked()
+		s.readyOnce.Do(func() { close(ready) })
+		return s.inboundChannel
+	}()
 
 	defer func() {
+		s.mutex.Lock()
+		defer s.mutex.Unlock()
+
 		if s.subscriberChannels != nil {
 			for sourceID, source := range s.subscriberChannels {
 				for actionName, subscribers := range source {
@@ -159,60 +203,54 @@ func (s *ActionServiceWS) Start(ctx *context.Context) {
 	for {
 		select {
 
-		case <-(*s.ctx).Done():
+		case <-(*ctx).Done():
 			return
 
-		case action, ok := <-s.inboundChannel:
+		case action, ok := <-inboundChannel:
 			if !ok {
 				return
 			}
 
-			if s.subscriberChannels == nil {
-				continue
-			}
+			// under the lock Subscribe and Unsubscribe change the lists with (see
+			// EventServiceWS.Start)
+			func() {
+				s.mutex.Lock()
+				defer s.mutex.Unlock()
 
-			if s.subscriberChannels[action.SourceID] == nil {
-				continue
-			}
-
-			if s.subscriberChannels[action.SourceID][action.Name] == nil {
-				continue
-			}
-
-			for _, c := range s.subscriberChannels[action.SourceID][action.Name] {
-				select {
-				case c <- action:
-				case <-(*s.ctx).Done():
+				if s.subscriberChannels == nil || s.subscriberChannels[action.SourceID] == nil {
 					return
-				default: // drop event if no one is listening
-					continue
 				}
-			}
+
+				for _, c := range s.subscriberChannels[action.SourceID][action.Name] {
+					select {
+					case c <- action:
+					default: // drop action if no one is listening
+					}
+				}
+			}()
 
 		case <-ticker.C:
-			if s.subscriberChannels == nil {
-				continue
-			}
-
 			heartbeat := model.Action{
 				SourceID:  common.MessageBusSourceID,
 				Name:      common.MessageBusHeartbeatName,
 				Timestamp: time.Now().Unix(),
 			}
 
-			for _, source := range s.subscriberChannels {
-				for _, subscribers := range source {
-					for _, subscriber := range subscribers {
-						select {
-						case subscriber <- heartbeat:
-						case <-(*s.ctx).Done():
-							return
-						default: // drop event if no one is listening
-							continue
+			func() {
+				s.mutex.Lock()
+				defer s.mutex.Unlock()
+
+				for _, source := range s.subscriberChannels {
+					for _, subscribers := range source {
+						for _, subscriber := range subscribers {
+							select {
+							case subscriber <- heartbeat:
+							default: // drop event if no one is listening
+							}
 						}
 					}
 				}
-			}
+			}()
 		}
 	}
 }

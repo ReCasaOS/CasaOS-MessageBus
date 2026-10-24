@@ -23,15 +23,40 @@ type EventServiceWS struct {
 	ctx  *context.Context
 	stop chan struct{}
 
+	// ready: closed once Start has installed its state; Publish delivers from then on
+	ready     chan struct{}
+	readyOnce sync.Once
+
 	inboundChannel     chan model.Event
 	subscriberChannels map[string]map[string][]chan model.Event
 }
 
 var mutex = &sync.Mutex{}
 
+// Ready is closed once Start runs: events published from then on are delivered.
+func (s *EventServiceWS) Ready() <-chan struct{} {
+	mutex.Lock()
+	defer mutex.Unlock()
+	return s.readyLocked()
+}
+
+func (s *EventServiceWS) readyLocked() chan struct{} {
+	if s.ready == nil {
+		s.ready = make(chan struct{})
+	}
+	return s.ready
+}
+
 func (s *EventServiceWS) Publish(event model.Event) {
-	if s.inboundChannel == nil {
-		logger.Error("error when publishing event via websocket", zap.Error(ErrInboundChannelNotFound))
+	// Start runs in a goroutine, sets both under the lock; before that: drop (no nil-ctx panic)
+	inboundChannel, ctx := func() (chan model.Event, *context.Context) {
+		mutex.Lock()
+		defer mutex.Unlock()
+		return s.inboundChannel, s.ctx
+	}()
+	if inboundChannel == nil || ctx == nil {
+		logger.Warn("event published before the bus started: dropped", zap.String("sourceID", event.SourceID), zap.String("name", event.Name))
+		return
 	}
 
 	if event.Timestamp == 0 {
@@ -44,10 +69,10 @@ func (s *EventServiceWS) Publish(event model.Event) {
 	// goroutine of its own, and an event dropped here because the dispatch was
 	// busy with the one before was an alert never sent.
 	select {
-	case s.inboundChannel <- event:
+	case inboundChannel <- event:
 
-	case <-(*s.ctx).Done():
-		if err := (*s.ctx).Err(); err != nil {
+	case <-(*ctx).Done():
+		if err := (*ctx).Err(); err != nil {
 			logger.Info(err.Error())
 		}
 		return
@@ -134,18 +159,27 @@ func (s *EventServiceWS) Unsubscribe(sourceID string, name string, c chan model.
 }
 
 func (s *EventServiceWS) Start(ctx *context.Context) {
-	func() {
+	inboundChannel := func() chan model.Event {
 		mutex.Lock()
 		defer mutex.Unlock()
 
 		s.ctx = ctx
 
 		s.inboundChannel = make(chan model.Event)
-		s.subscriberChannels = make(map[string]map[string][]chan model.Event)
+		// keep subscriptions made before Start (YSK subscribes right after Services.Start)
+		if s.subscriberChannels == nil {
+			s.subscriberChannels = make(map[string]map[string][]chan model.Event)
+		}
 		s.stop = make(chan struct{})
+		ready := s.readyLocked()
+		s.readyOnce.Do(func() { close(ready) })
+		return s.inboundChannel
 	}()
 
 	defer func() {
+		mutex.Lock()
+		defer mutex.Unlock()
+
 		if s.subscriberChannels != nil {
 			for sourceID, source := range s.subscriberChannels {
 				for eventName, subscribers := range source {
@@ -179,10 +213,10 @@ func (s *EventServiceWS) Start(ctx *context.Context) {
 	for {
 		select {
 
-		case <-(*s.ctx).Done():
+		case <-(*ctx).Done():
 			return
 
-		case event, ok := <-s.inboundChannel:
+		case event, ok := <-inboundChannel:
 			if !ok {
 				return
 			}
