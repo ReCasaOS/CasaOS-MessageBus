@@ -37,9 +37,6 @@ var (
 	commit = "private build"
 	date   = "private build"
 
-	//go:embed api/index.html
-	_docHTML string
-
 	//go:embed api/message_bus/openapi.yaml
 	_docYAML string
 
@@ -107,7 +104,7 @@ func main() {
 		panic(err)
 	}
 
-	docRouter, err := route.NewDocRouter(swagger, _docHTML, _docYAML)
+	docRouter, err := route.NewDocRouter(swagger, _docYAML)
 	if err != nil {
 		panic(err)
 	}
