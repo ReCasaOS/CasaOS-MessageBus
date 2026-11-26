@@ -139,7 +139,7 @@ func NewAPIRouter(swagger *openapi3.T, services *service.Services) (http.Handler
 	return e, nil
 }
 
-func NewDocRouter(swagger *openapi3.T, docHTML string, docYAML string) (http.Handler, error) {
+func NewDocRouter(swagger *openapi3.T, docYAML string) (http.Handler, error) {
 	apiPath, err := getAPIPath(getSwaggerURL(swagger))
 	if err != nil {
 		return nil, err
@@ -147,20 +147,7 @@ func NewDocRouter(swagger *openapi3.T, docHTML string, docYAML string) (http.Han
 
 	docPath := "/doc" + apiPath
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == docPath {
-			if _, err := w.Write([]byte(docHTML)); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-			return
-		}
-
-		if r.URL.Path == docPath+"/openapi.yaml" {
-			if _, err := w.Write([]byte(docYAML)); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-			}
-		}
-	}), nil
+	return docHandler(docPath, docPath+"/openapi.yaml", docYAML), nil
 }
 
 func getSwaggerURL(swagger *openapi3.T) string {
